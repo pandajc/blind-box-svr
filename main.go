@@ -56,7 +56,7 @@ func initEnv() {
 func initConfig() {
 	env := global.GetEnv()
 	filename := fmt.Sprintf("configs/%s.toml", env)
-	fmt.Printf("use config file %s", filename)
+	fmt.Printf("use config file %s \n", filename)
 	err := configor.Load(&cfg.Config, filename)
 	if err != nil {
 		fmt.Printf("init config failed err=%v \n", err)
