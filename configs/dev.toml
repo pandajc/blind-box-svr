@@ -1,0 +1,10 @@
+[server]
+port=8080
+
+[db]
+url="root:root@tcp(127.0.0.1:3306)/hello?charset=utf8mb4&parseTime=True&loc=Local"
+maxIdleConns=5
+maxOpenConns=20
+
+[log]
+level = "debug"
