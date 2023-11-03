@@ -7,6 +7,8 @@ func Cors() gin.HandlerFunc {
     return func(c *gin.Context) {
         method := c.Request.Method
         origin := c.Request.Header.Get("Origin")
+		// todo 临时测试 生产要控制跨域
+		origin = "*"
         if origin != "" {
             c.Header("Access-Control-Allow-Origin", origin)
             c.Header("Access-Control-Allow-Methods", "POST, GET, OPTIONS, PUT, DELETE, UPDATE")
