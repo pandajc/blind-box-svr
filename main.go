@@ -38,6 +38,7 @@ func initGinServer() {
 		})
 	})
 	r.Use(middlewares.HandleError)
+	r.Use(middlewares.Cors())
 	routers.InitGinGroups(r)
 	r.Run(":" + strconv.Itoa(cfg.Config.Server.Port))
 }
