@@ -1,0 +1,11 @@
+[server]
+port=8080
+
+[db]
+url="%s:%s@tcp(%s)/%s?readTimeout=1500ms&writeTimeout=1500ms&charset=utf8&loc=Local&&parseTime=true"
+
+maxIdleConns=100
+maxOpenConns=200
+
+[log]
+level = "info"

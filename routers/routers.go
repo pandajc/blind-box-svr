@@ -6,4 +6,6 @@ func InitGinGroups(r *gin.Engine) {
 	st := r.Group("/student")
 	st.GET("/list", getStudentList)
 	st.POST("/create", createStudent)
+	user := r.Group("/user")
+	user.POST("/login", login)
 }
