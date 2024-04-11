@@ -35,7 +35,11 @@ func (s *UserBiz) Login(ctx context.Context, param *params.UserReq) (*params.Use
 	var openid string
 	if gc, ok := ctx.(*gin.Context); ok {
 		openid = gc.GetHeader("X-WX-OPENID")
+		for key, values := range gc.Request.Header {
+			log.Infof("%v %v", key, values)
+		}
 	}
+
 	if len(openid) == 0 {
 		return nil, errs.NewRespErr(errs.ErrCodeInvalidParam, "no openid")
 	}
