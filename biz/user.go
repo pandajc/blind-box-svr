@@ -2,6 +2,7 @@ package biz
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fengshen-svr/common/errs"
 	"fengshen-svr/dto/params"
@@ -61,15 +62,26 @@ func (s *UserBiz) Login(ctx context.Context, param *params.UserReq) (*params.Use
 				GameTime: param.GameTime,
 				Money:    param.Money,
 				Update:   false,
+				BizData:  param.BizData,
 			}
 			return resp, nil
 		} else {
+			bizDataObj := map[string]interface{}{}
+			bizDataStr := userTab.BizData
+			if len(bizDataStr) > 0 {
+				err := json.Unmarshal([]byte(bizDataStr), &bizDataObj)
+				if err != nil {
+					log.Errorf("json unmarshal err=%v, data=%v", err, bizDataStr)
+					return nil, err
+				}
+			}
 			log.Infof("id %v openid %v use db data %+v, param %+v", userTab.ID, userTab.Openid, userTab, param)
 			resp := &params.UserResp{
 				ID:       userTab.ID,
 				GameTime: userTab.GameTime,
 				Money:    userTab.Money,
 				Update:   true,
+				BizData:  bizDataObj,
 			}
 			return resp, nil
 		}
@@ -84,14 +96,24 @@ func (s *UserBiz) Login(ctx context.Context, param *params.UserReq) (*params.Use
 		GameTime: newUser.GameTime,
 		Money:    newUser.Money,
 		Update:   true,
+		BizData:  map[string]interface{}{},
 	}
 	return resp, nil
 
 }
 
 func (s *UserBiz) updateUser(id int64, param *params.UserReq) error {
+	bizDataStr := "{}"
+	if param.BizData != nil {
+		jsonBytes, err := json.Marshal(param.BizData)
+		if err != nil {
+			log.Errorf("json marshal err=%v| bizData=%v", err, param.BizData)
+			return err
+		}
+		bizDataStr = string(jsonBytes)
+	}
 	return model.UserTabMgr(global.GetDB()).Where("id = ?", id).UpdateColumns(map[string]interface{}{
-		"game_time": param.GameTime, "money": param.Money, "update_time": time.Now()}).Error
+		"game_time": param.GameTime, "money": param.Money, "update_time": time.Now(), "biz_data": bizDataStr}).Error
 }
 
 func (s *UserBiz) createUser(openid string) (*model.UserTab, error) {
@@ -101,6 +123,7 @@ func (s *UserBiz) createUser(openid string) (*model.UserTab, error) {
 		GameTime:   0,
 		State:      1,
 		CreateTime: time.Now(),
+		BizData:    "{}",
 	}
 	err := model.UserTabMgr(global.GetDB()).Create(newUser).Error
 	if err != nil {

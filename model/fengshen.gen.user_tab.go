@@ -89,6 +89,11 @@ func (obj *_UserTabMgr) WithUpdateTime(updateTime time.Time) Option {
 	return optionFunc(func(o *options) { o.query["update_time"] = updateTime })
 }
 
+// WithBizData biz_data获取
+func (obj *_UserTabMgr) WithBizData(bizData string) Option {
+	return optionFunc(func(o *options) { o.query["biz_data"] = bizData })
+}
+
 // GetByOption 功能选项模式获取
 func (obj *_UserTabMgr) GetByOption(opts ...Option) (result UserTab, err error) {
 	options := options{
@@ -240,6 +245,20 @@ func (obj *_UserTabMgr) GetBatchFromUpdateTime(updateTimes []time.Time) (results
 	return
 }
 
+// GetFromBizData 通过biz_data获取内容
+func (obj *_UserTabMgr) GetFromBizData(bizData string) (results []*UserTab, err error) {
+	err = obj.DB.WithContext(obj.ctx).Model(UserTab{}).Where("`biz_data` = ?", bizData).Find(&results).Error
+
+	return
+}
+
+// GetBatchFromBizData 批量查找
+func (obj *_UserTabMgr) GetBatchFromBizData(bizDatas []string) (results []*UserTab, err error) {
+	err = obj.DB.WithContext(obj.ctx).Model(UserTab{}).Where("`biz_data` IN (?)", bizDatas).Find(&results).Error
+
+	return
+}
+
 //////////////////////////primary index case ////////////////////////////////////////////
 
 // FetchByPrimaryKey primary or index 获取唯一内容
@@ -249,9 +268,9 @@ func (obj *_UserTabMgr) FetchByPrimaryKey(id int64) (result UserTab, err error) 
 	return
 }
 
-// FetchUniqueIndexByUkOpenidState primary or index 获取唯一内容
-func (obj *_UserTabMgr) FetchUniqueIndexByUkOpenidState(openid string, state int8) (result UserTab, err error) {
-	err = obj.DB.WithContext(obj.ctx).Model(UserTab{}).Where("`openid` = ? AND `state` = ?", openid, state).First(&result).Error
+// FetchIndexByIDxOpenid  获取多个内容
+func (obj *_UserTabMgr) FetchIndexByIDxOpenid(openid string) (results []*UserTab, err error) {
+	err = obj.DB.WithContext(obj.ctx).Model(UserTab{}).Where("`openid` = ?", openid).Find(&results).Error
 
 	return
 }
