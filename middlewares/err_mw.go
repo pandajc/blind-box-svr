@@ -1,8 +1,8 @@
 package middlewares
 
 import (
-	"fengshen-svr/common"
-	"fengshen-svr/common/errs"
+	"blind-box-svr/common"
+	"blind-box-svr/common/errs"
 	"fmt"
 
 	"github.com/gin-gonic/gin"

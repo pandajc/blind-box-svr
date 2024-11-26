@@ -1,7 +1,7 @@
 package common
 
 import (
-	"fengshen-svr/common/errs"
+	"blind-box-svr/common/errs"
 	"net/http"
 
 	"github.com/gin-gonic/gin"

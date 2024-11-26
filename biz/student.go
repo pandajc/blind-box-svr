@@ -1,9 +1,9 @@
 package biz
 
 import (
-	"fengshen-svr/dto/params"
-	"fengshen-svr/global"
-	"fengshen-svr/model"
+	"blind-box-svr/dto/params"
+	"blind-box-svr/global"
+	"blind-box-svr/model"
 
 	log "github.com/sirupsen/logrus"
 )

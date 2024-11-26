@@ -1,12 +1,12 @@
 package main
 
 import (
-	"fengshen-svr/biz"
-	"fengshen-svr/cfg"
-	"fengshen-svr/common/constants"
-	"fengshen-svr/global"
-	"fengshen-svr/middlewares"
-	"fengshen-svr/routers"
+	"blind-box-svr/biz"
+	"blind-box-svr/cfg"
+	"blind-box-svr/common/constants"
+	"blind-box-svr/global"
+	"blind-box-svr/middlewares"
+	"blind-box-svr/routers"
 	"fmt"
 	"os"
 	"strconv"

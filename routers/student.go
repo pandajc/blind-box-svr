@@ -1,10 +1,10 @@
 package routers
 
 import (
-	"fengshen-svr/biz"
-	"fengshen-svr/common"
-	"fengshen-svr/common/errs"
-	"fengshen-svr/dto/params"
+	"blind-box-svr/biz"
+	"blind-box-svr/common"
+	"blind-box-svr/common/errs"
+	"blind-box-svr/dto/params"
 
 	"github.com/gin-gonic/gin"
 )
