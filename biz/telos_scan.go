@@ -19,7 +19,11 @@ package biz
 //   }
 
 import (
+	"blind-box-svr/common/constants"
 	nftmarket "blind-box-svr/contracts"
+	"blind-box-svr/dto/params"
+	"blind-box-svr/global"
+	"blind-box-svr/model"
 	"math/big"
 	"strconv"
 	"strings"
@@ -27,6 +31,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/go-resty/resty/v2"
 
 	"github.com/ethereum/go-ethereum/crypto"
@@ -51,6 +56,7 @@ type BlockLog struct {
 	BlockHash   common.Hash `json:"blockHash" rlp:"-"`
 	Index       uint        `json:"logIndex" rlp:"-"`
 	Removed     bool        `json:"removed" rlp:"-"`
+	Timestamp   uint64      `json:"timestamp"`
 }
 
 type TelosScanBiz struct {
@@ -72,6 +78,27 @@ const fetchApiIntervalSec int64 = 10
 
 var telosScanBiz *TelosScanBiz
 
+// var rpcClient          *ethclient.Client
+var nftMarket *nftmarket.Nftmarket
+
+func initRpcClient() {
+	rpcClient, err := ethclient.Dial(rpcUrl)
+	if err != nil {
+		log.Errorf("ethclient.Dial err: %v", err)
+		panic(err)
+	}
+	address := common.HexToAddress(contractAddrStr)
+	nftMarket, err = nftmarket.NewNftmarket(address, rpcClient)
+	if err != nil {
+		log.Errorf("NewNftmarket err: %v ", err)
+		panic(err)
+	}
+}
+
+func hashToAddress(bytes []byte) common.Address {
+	return common.Address(bytes[common.HashLength-common.AddressLength:])
+}
+
 func NewTelosScanBiz() {
 	telosScanBiz = &TelosScanBiz{}
 	abiABI, err := abi.JSON(strings.NewReader(nftmarket.NftmarketABI))
@@ -79,6 +106,7 @@ func NewTelosScanBiz() {
 		log.Errorf("parse abi error %v", err)
 		panic(err)
 	}
+	initRpcClient()
 	telosScanBiz.eventDataProcessor = make(map[string]func(*BlockLog, abi.ABI) error)
 	telosScanBiz.contractAbi = abiABI
 	telosScanBiz.apiClient = resty.New()
@@ -87,6 +115,7 @@ func NewTelosScanBiz() {
 	telosScanBiz.eventDataProcessor[logRevokeSig] = processEventRevokeFunc
 	telosScanBiz.eventDataProcessor[logUpdatePriceSig] = processEventUpdatePriceFunc
 	telosScanBiz.eventDataProcessor[logUpdateAmountSig] = processEventUpdateAmountFunc
+	telosScanBiz.startProcessEvents()
 }
 
 func (b *TelosScanBiz) startProcessEvents() {
@@ -163,12 +192,37 @@ func (b *TelosScanBiz) processLog(bl *BlockLog) {
 	}
 }
 
+func (b *TelosScanBiz) getOrderList(param *params.OrderParam) ([]*model.OrderTab, error) {
+	otm := model.OrderTabMgr(global.GetDB())
+	gdb := otm.Where("nft_addr = ?", param.NftAddr)
+	if len(param.Seller) > 0 {
+		gdb.Where("seller = ?", param.Seller)
+	}
+	if param.NftType > 0 && param.MaxCardTokenId > 0 {
+		if param.NftType == 1 {
+			gdb.Where("token_id <= ?", param.MaxCardTokenId)
+		} else if param.NftType == 2 {
+			gdb.Where("token_id > ?", param.MaxCardTokenId)
+		}
+	}
+	limit := param.Limit
+	if limit == 0 || limit > 20 {
+		limit = 20
+	}
+	var orders []*model.OrderTab
+	err := gdb.Limit(int(limit)).Offset(int(param.Offset)).Order("order_id desc").Find(&orders).Error
+	if err != nil {
+		return nil, err
+	}
+	return orders, nil
+}
+
 var processEventListFunc = func(bl *BlockLog, contractAbi abi.ABI) error {
 	nftMarketList := nftmarket.NftmarketList{}
 	//event List(address indexed seller, address indexed nftAddr, uint256 indexed orderId, uint256 price, uint256 amount, uint256 tokenId)
 	topics := bl.Topics
-	nftMarketList.Seller = common.Address(topics[1].Bytes())
-	nftMarketList.NftAddr = common.Address(topics[2].Bytes())
+	nftMarketList.Seller = hashToAddress(topics[1].Bytes())
+	nftMarketList.NftAddr = hashToAddress(topics[2].Bytes())
 	nftMarketList.OrderId = new(big.Int).SetBytes(topics[3].Bytes())
 	err := contractAbi.UnpackIntoInterface(&nftMarketList, "List", common.FromHex(bl.Data))
 	if err != nil {
@@ -176,6 +230,23 @@ var processEventListFunc = func(bl *BlockLog, contractAbi abi.ABI) error {
 		return err
 	}
 	log.Infof("nftMarketList: %v", nftMarketList)
+	order := &model.OrderTab{
+		OrderID:         nftMarketList.OrderId.Int64(),
+		NftAddr:         nftMarketList.NftAddr.Hex(),
+		Seller:          nftMarketList.Seller.Hex(),
+		TokenID:         nftMarketList.TokenId.Int64(),
+		Price:           float64(nftMarketList.Price.Int64()),
+		Amount:          nftMarketList.Amount.Int64(),
+		State:           constants.ACTIVE,
+		CreateTimestamp: int64(bl.Timestamp),
+		UpdateTimestamp: 0,
+		CreateTime:      time.Now(),
+		// UpdateTime:      nil,
+	}
+	err = model.OrderTabMgr(global.GetDB()).Create(order).Error
+	if err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -183,8 +254,8 @@ var processEventPurchaseFunc = func(bl *BlockLog, contractAbi abi.ABI) error {
 	nftMarketPurchase := nftmarket.NftmarketPurchase{}
 	//event Purchase(address indexed buyer, address indexed nftAddr, uint256 indexed orderId, uint256 price, uint256 amount)
 	topics := bl.Topics
-	nftMarketPurchase.Buyer = common.Address(topics[1].Bytes())
-	nftMarketPurchase.NftAddr = common.Address(topics[2].Bytes())
+	nftMarketPurchase.Buyer = hashToAddress(topics[1].Bytes())
+	nftMarketPurchase.NftAddr = hashToAddress(topics[2].Bytes())
 	nftMarketPurchase.OrderId = new(big.Int).SetBytes(topics[3].Bytes())
 	err := contractAbi.UnpackIntoInterface(&nftMarketPurchase, "Purchase", common.FromHex(bl.Data))
 	if err != nil {
@@ -192,7 +263,28 @@ var processEventPurchaseFunc = func(bl *BlockLog, contractAbi abi.ABI) error {
 		return err
 	}
 	log.Infof("nftMarketPurchase: %v", nftMarketPurchase)
+	otm := model.OrderTabMgr(global.GetDB())
 
+	// orderTab, err := otm.GetFromOrderID(nftMarketPurchase.OrderId.Int64())
+	// if err != nil {
+	// 	return err
+	// }
+	// if orderTab.OrderID == 0 {
+	// 	return errors.New("orderId is 0")
+	// }
+	nftMarketOrder, err := nftMarket.Get(nil, nftMarketPurchase.OrderId)
+	if err != nil {
+		return err
+	}
+	cols := model.OrderTabColumns
+	err = otm.Select(cols.Amount, cols.UpdateTimestamp, cols.UpdateTime).Updates(model.OrderTab{
+		Amount:          nftMarketOrder.Amount.Int64(),
+		UpdateTimestamp: int64(bl.Timestamp),
+		UpdateTime:      time.Now(),
+	}).Where("order_id = ?", nftMarketPurchase.OrderId).Error
+	if err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -200,10 +292,19 @@ var processEventRevokeFunc = func(bl *BlockLog, contractAbi abi.ABI) error {
 	nftMarketRevoke := nftmarket.NftmarketRevoke{}
 	//event Revoke(address indexed seller, address indexed nftAddr, uint256 indexed orderId)
 	topics := bl.Topics
-	nftMarketRevoke.Seller = common.Address(topics[1].Bytes())
-	nftMarketRevoke.NftAddr = common.Address(topics[2].Bytes())
+	nftMarketRevoke.Seller = hashToAddress(topics[1].Bytes())
+	nftMarketRevoke.NftAddr = hashToAddress(topics[2].Bytes())
 	nftMarketRevoke.OrderId = new(big.Int).SetBytes(topics[3].Bytes())
 	log.Infof("nftMarketRevoke: %v", nftMarketRevoke)
+	cols := model.OrderTabColumns
+	err := model.UserTabMgr(global.GetDB()).Select(cols.State, cols.UpdateTimestamp, cols.UpdateTime).Updates(model.OrderTab{
+		State:           constants.INACTIVE,
+		UpdateTimestamp: int64(bl.Timestamp),
+		UpdateTime:      time.Now(),
+	}).Where("order_id = ?", nftMarketRevoke.OrderId).Error
+	if err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -211,8 +312,8 @@ var processEventUpdatePriceFunc = func(bl *BlockLog, contractAbi abi.ABI) error 
 	nftMarketUpdatePrice := nftmarket.NftmarketUpdatePrice{}
 	// event UpdatePrice(address indexed seller, address indexed nftAddr, uint256 indexed orderId, uint256 newPrice);
 	topics := bl.Topics
-	nftMarketUpdatePrice.Seller = common.Address(topics[1].Bytes())
-	nftMarketUpdatePrice.NftAddr = common.Address(topics[2].Bytes())
+	nftMarketUpdatePrice.Seller = hashToAddress(topics[1].Bytes())
+	nftMarketUpdatePrice.NftAddr = hashToAddress(topics[2].Bytes())
 	nftMarketUpdatePrice.OrderId = new(big.Int).SetBytes(topics[3].Bytes())
 	err := contractAbi.UnpackIntoInterface(&nftMarketUpdatePrice, "UpdatePrice", common.FromHex(bl.Data))
 	if err != nil {
@@ -220,6 +321,15 @@ var processEventUpdatePriceFunc = func(bl *BlockLog, contractAbi abi.ABI) error 
 		return err
 	}
 	log.Infof("nftMarketUpdatePrice: %v", nftMarketUpdatePrice)
+	cols := model.OrderTabColumns
+	err = model.UserTabMgr(global.GetDB()).Select(cols.Price, cols.UpdateTimestamp, cols.UpdateTime).Updates(model.OrderTab{
+		Price:           float64(nftMarketUpdatePrice.NewPrice.Int64()),
+		UpdateTimestamp: int64(bl.Timestamp),
+		UpdateTime:      time.Now(),
+	}).Where("order_id = ?", nftMarketUpdatePrice.OrderId).Error
+	if err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -227,8 +337,8 @@ var processEventUpdateAmountFunc = func(bl *BlockLog, contractAbi abi.ABI) error
 	nftMarketUpdateAmount := nftmarket.NftmarketUpdateAmount{}
 	// event UpdateAmount(address indexed seller, address indexed nftAddr, uint256 indexed orderId, uint256 newAmount);
 	topics := bl.Topics
-	nftMarketUpdateAmount.Seller = common.Address(topics[1].Bytes())
-	nftMarketUpdateAmount.NftAddr = common.Address(topics[2].Bytes())
+	nftMarketUpdateAmount.Seller = hashToAddress(topics[1].Bytes())
+	nftMarketUpdateAmount.NftAddr = hashToAddress(topics[2].Bytes())
 	nftMarketUpdateAmount.OrderId = new(big.Int).SetBytes(topics[3].Bytes())
 	err := contractAbi.UnpackIntoInterface(&nftMarketUpdateAmount, "UpdateAmount", common.FromHex(bl.Data))
 	if err != nil {
@@ -236,5 +346,14 @@ var processEventUpdateAmountFunc = func(bl *BlockLog, contractAbi abi.ABI) error
 		return err
 	}
 	log.Infof("nftMarketUpdateAmount: %v", nftMarketUpdateAmount)
+	cols := model.OrderTabColumns
+	err = model.UserTabMgr(global.GetDB()).Select(cols.Price, cols.UpdateTimestamp, cols.UpdateTime).Updates(model.OrderTab{
+		Amount:          nftMarketUpdateAmount.NewAmount.Int64(),
+		UpdateTimestamp: int64(bl.Timestamp),
+		UpdateTime:      time.Now(),
+	}).Where("order_id = ?", nftMarketUpdateAmount.OrderId).Error
+	if err != nil {
+		return err
+	}
 	return nil
 }

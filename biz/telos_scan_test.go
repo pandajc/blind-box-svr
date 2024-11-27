@@ -60,6 +60,20 @@ var jsonStr string = `
 	  }
    `
 
+func TestA(t *testing.T) {
+	// nftMarketList.Seller = common.Address(topics[1].Bytes())
+	var jsonData JSONData
+	err := json.Unmarshal([]byte(jsonStr), &jsonData)
+	if err != nil {
+		t.Error(err)
+		return
+	}
+	topic1 := jsonData.Results[0].Topics[1]
+
+	fmt.Println(common.Address(topic1[common.HashLength-common.AddressLength:]))
+	fmt.Println(common.Address(topic1.Bytes()))
+}
+
 func TestUnpackIntoInterface(t *testing.T) {
 
 	fmt.Println(jsonStr)
