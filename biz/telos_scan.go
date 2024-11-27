@@ -19,12 +19,222 @@ package biz
 //   }
 
 import (
+	nftmarket "blind-box-svr/contracts"
+	"math/big"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/go-resty/resty/v2"
+
+	"github.com/ethereum/go-ethereum/crypto"
+	log "github.com/sirupsen/logrus"
 )
 
-type Event struct {
+type JSONData struct {
+	Code    int         `json:"code"`
+	Success bool        `json:"success"`
+	Message string      `json:"message"`
+	Results []*BlockLog `json:"results"`
 }
 
-func parseEvent() {
-	common.HexToAddress("")
+type BlockLog struct {
+	Address common.Address `json:"address" gencodec:"required"`
+	Topics  []common.Hash  `json:"topics" gencodec:"required"`
+	// Data        []byte         `json:"data" gencodec:"required"`
+	Data        string      `json:"data" gencodec:"required"`
+	BlockNumber uint64      `json:"blockNumber" rlp:"-"`
+	TxHash      common.Hash `json:"transactionHash" gencodec:"required" rlp:"-"`
+	TxIndex     uint        `json:"transactionIndex" rlp:"-"`
+	BlockHash   common.Hash `json:"blockHash" rlp:"-"`
+	Index       uint        `json:"logIndex" rlp:"-"`
+	Removed     bool        `json:"removed" rlp:"-"`
+}
+
+type TelosScanBiz struct {
+	eventDataProcessor map[string]func(*BlockLog, abi.ABI) error
+	contractAbi        abi.ABI
+	apiClient          *resty.Client
+}
+
+var logListSig string = calculateTopicHash("List(address,address,uint256,uint256,uint256,uint256)")
+var logPurchaseSig string = calculateTopicHash("Purchase(address,address,uint256,uint256,uint256)")
+var logRevokeSig string = calculateTopicHash("List(address,address,uint256)")
+var logUpdatePriceSig string = calculateTopicHash("List(address,address,uint256,uint256)")
+var logUpdateAmountSig string = calculateTopicHash("List(address,address,uint256,uint256)")
+
+const contractAddrStr string = "0xD60d331B1999824C84A0A702D07368Fde493dF94"
+const rpcUrl string = "https://rpc.testnet.telos.net"
+const apiUrl string = "https://api.testnet.teloscan.io"
+const fetchApiIntervalSec int64 = 10
+
+var telosScanBiz *TelosScanBiz
+
+func NewTelosScanBiz() {
+	telosScanBiz = &TelosScanBiz{}
+	abiABI, err := abi.JSON(strings.NewReader(nftmarket.NftmarketABI))
+	if err != nil {
+		log.Errorf("parse abi error %v", err)
+		panic(err)
+	}
+	telosScanBiz.eventDataProcessor = make(map[string]func(*BlockLog, abi.ABI) error)
+	telosScanBiz.contractAbi = abiABI
+	telosScanBiz.apiClient = resty.New()
+	telosScanBiz.eventDataProcessor[logListSig] = processEventListFunc
+	telosScanBiz.eventDataProcessor[logPurchaseSig] = processEventPurchaseFunc
+	telosScanBiz.eventDataProcessor[logRevokeSig] = processEventRevokeFunc
+	telosScanBiz.eventDataProcessor[logUpdatePriceSig] = processEventUpdatePriceFunc
+	telosScanBiz.eventDataProcessor[logUpdateAmountSig] = processEventUpdateAmountFunc
+}
+
+func (b *TelosScanBiz) startProcessEvents() {
+	ticker := time.NewTicker(time.Duration(fetchApiIntervalSec) * time.Second)
+	go func() {
+		for {
+			t := <-ticker.C
+			log.Infof("ticker invoke time: %v", t)
+			// todo query last index
+			if true {
+				index := int64(0)
+				b.batchProcessLog(index)
+
+			}
+		}
+	}()
+
+}
+
+func (b *TelosScanBiz) batchProcessLog(index int64) {
+	logs, err := b.requestContractEvents(index)
+	if err != nil {
+		log.Errorf("requestContractEvents err: %v", err)
+	}
+	for _, eventLog := range logs {
+		b.processLog(eventLog)
+	}
+}
+
+func (b *TelosScanBiz) requestContractEvents(offset int64) ([]*BlockLog, error) {
+
+	jsonData := JSONData{}
+	req := b.apiClient.R().SetPathParam("address", contractAddrStr).SetQueryParams(map[string]string{
+		"offset": strconv.FormatInt(offset, 10),
+		"limit":  "10",
+		"sort":   "ASC",
+	}).SetHeader("Accept", "application/json").SetResult(&jsonData)
+	resp, err := req.Get(apiUrl + "/v1/contract/{address}/logs")
+	if err != nil {
+		log.Errorf("request err: %v", err)
+		return nil, err
+	}
+	log.Infof("request req: %v resp: %v", req, resp)
+	if resp.IsSuccess() {
+		if jsonData.Success {
+			return jsonData.Results, nil
+		} else {
+			log.Errorf("telos api return failed, code: %v, msg: %v", jsonData.Code, jsonData.Message)
+			return nil, err
+		}
+	} else {
+		log.Errorf("request error, resp: %v", resp)
+		return nil, err
+	}
+}
+
+func calculateTopicHash(eventAbi string) string {
+	// eventSignatureBytes := []byte("Transfer(address,address,uint256)")
+	return crypto.Keccak256Hash([]byte(eventAbi)).Hex()
+}
+
+func (b *TelosScanBiz) processLog(bl *BlockLog) {
+	log.Infof("preparing process log: %v", bl)
+	topics := bl.Topics
+	if len(topics) == 0 {
+		return
+	}
+	eventSigStr := topics[0].Hex()
+	processor := b.eventDataProcessor[eventSigStr]
+	if processor != nil {
+		if err := processor(bl, b.contractAbi); err != nil {
+			log.Errorf("processor %v return err: %v", eventSigStr, err)
+		}
+	}
+}
+
+var processEventListFunc = func(bl *BlockLog, contractAbi abi.ABI) error {
+	nftMarketList := nftmarket.NftmarketList{}
+	//event List(address indexed seller, address indexed nftAddr, uint256 indexed orderId, uint256 price, uint256 amount, uint256 tokenId)
+	topics := bl.Topics
+	nftMarketList.Seller = common.Address(topics[1].Bytes())
+	nftMarketList.NftAddr = common.Address(topics[2].Bytes())
+	nftMarketList.OrderId = new(big.Int).SetBytes(topics[3].Bytes())
+	err := contractAbi.UnpackIntoInterface(&nftMarketList, "List", common.FromHex(bl.Data))
+	if err != nil {
+		log.Errorf("processEventListFunc call UnpackIntoInterface err: %v", err)
+		return err
+	}
+	log.Infof("nftMarketList: %v", nftMarketList)
+	return nil
+}
+
+var processEventPurchaseFunc = func(bl *BlockLog, contractAbi abi.ABI) error {
+	nftMarketPurchase := nftmarket.NftmarketPurchase{}
+	//event Purchase(address indexed buyer, address indexed nftAddr, uint256 indexed orderId, uint256 price, uint256 amount)
+	topics := bl.Topics
+	nftMarketPurchase.Buyer = common.Address(topics[1].Bytes())
+	nftMarketPurchase.NftAddr = common.Address(topics[2].Bytes())
+	nftMarketPurchase.OrderId = new(big.Int).SetBytes(topics[3].Bytes())
+	err := contractAbi.UnpackIntoInterface(&nftMarketPurchase, "Purchase", common.FromHex(bl.Data))
+	if err != nil {
+		log.Errorf("processEventPurchaseFunc call UnpackIntoInterface err: %v", err)
+		return err
+	}
+	log.Infof("nftMarketPurchase: %v", nftMarketPurchase)
+
+	return nil
+}
+
+var processEventRevokeFunc = func(bl *BlockLog, contractAbi abi.ABI) error {
+	nftMarketRevoke := nftmarket.NftmarketRevoke{}
+	//event Revoke(address indexed seller, address indexed nftAddr, uint256 indexed orderId)
+	topics := bl.Topics
+	nftMarketRevoke.Seller = common.Address(topics[1].Bytes())
+	nftMarketRevoke.NftAddr = common.Address(topics[2].Bytes())
+	nftMarketRevoke.OrderId = new(big.Int).SetBytes(topics[3].Bytes())
+	log.Infof("nftMarketRevoke: %v", nftMarketRevoke)
+	return nil
+}
+
+var processEventUpdatePriceFunc = func(bl *BlockLog, contractAbi abi.ABI) error {
+	nftMarketUpdatePrice := nftmarket.NftmarketUpdatePrice{}
+	// event UpdatePrice(address indexed seller, address indexed nftAddr, uint256 indexed orderId, uint256 newPrice);
+	topics := bl.Topics
+	nftMarketUpdatePrice.Seller = common.Address(topics[1].Bytes())
+	nftMarketUpdatePrice.NftAddr = common.Address(topics[2].Bytes())
+	nftMarketUpdatePrice.OrderId = new(big.Int).SetBytes(topics[3].Bytes())
+	err := contractAbi.UnpackIntoInterface(&nftMarketUpdatePrice, "UpdatePrice", common.FromHex(bl.Data))
+	if err != nil {
+		log.Errorf("processEventUpdatePriceFunc call UnpackIntoInterface err: %v", err)
+		return err
+	}
+	log.Infof("nftMarketUpdatePrice: %v", nftMarketUpdatePrice)
+	return nil
+}
+
+var processEventUpdateAmountFunc = func(bl *BlockLog, contractAbi abi.ABI) error {
+	nftMarketUpdateAmount := nftmarket.NftmarketUpdateAmount{}
+	// event UpdateAmount(address indexed seller, address indexed nftAddr, uint256 indexed orderId, uint256 newAmount);
+	topics := bl.Topics
+	nftMarketUpdateAmount.Seller = common.Address(topics[1].Bytes())
+	nftMarketUpdateAmount.NftAddr = common.Address(topics[2].Bytes())
+	nftMarketUpdateAmount.OrderId = new(big.Int).SetBytes(topics[3].Bytes())
+	err := contractAbi.UnpackIntoInterface(&nftMarketUpdateAmount, "UpdateAmount", common.FromHex(bl.Data))
+	if err != nil {
+		log.Errorf("processEventUpdateAmountFunc call UnpackIntoInterface err: %v", err)
+		return err
+	}
+	log.Infof("nftMarketUpdateAmount: %v", nftMarketUpdateAmount)
+	return nil
 }
