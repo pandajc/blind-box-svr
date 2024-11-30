@@ -125,37 +125,54 @@ func NewTelosScanBiz() {
 
 func (b *TelosScanBiz) startProcessEvents() {
 	ticker := time.NewTicker(time.Duration(fetchApiIntervalSec) * time.Second)
+	pullOffsetTabID := 1
 	go func() {
 		for {
 			t := <-ticker.C
 			log.Infof("ticker invoke time: %v", t)
-			// todo query last index
-			if true {
-				index := int64(0)
-				b.batchProcessLog(index)
-
+			offsetTab, err := model.PullOffsetTabMgr(global.GetDB()).GetFromID(pullOffsetTabID)
+			if err != nil {
+				log.Errorf("query pullOffsetTab err: %v", err)
+				continue
 			}
+			offset := offsetTab.Offset
+			testLimit := int64(2)
+			logsCount := b.batchProcessLog(offset, testLimit)
+			if logsCount == 0 {
+				log.Infof("pull 0 logs with offset: %v", offset)
+				continue
+			} else {
+				nextOffset := offset + int64(logsCount)
+				log.Infof("current offset: %v, preparing update next offset: %v", offset, nextOffset)
+				err := model.PullOffsetTabMgr(global.GetDB()).Where("id = ?", pullOffsetTabID).
+					Update(model.PullOffsetTabColumns.Offset, nextOffset).Error
+				if err != nil {
+					log.Errorf("update offsetTab err: %v", err)
+				}
+			}
+
 		}
 	}()
 
 }
 
-func (b *TelosScanBiz) batchProcessLog(index int64) {
-	logs, err := b.requestContractEvents(index)
+func (b *TelosScanBiz) batchProcessLog(offset int64, limit int64) int {
+	logs, err := b.requestContractEvents(offset, limit)
 	if err != nil {
 		log.Errorf("requestContractEvents err: %v", err)
 	}
 	for _, eventLog := range logs {
 		b.processLog(eventLog)
 	}
+	return len(logs)
 }
 
-func (b *TelosScanBiz) requestContractEvents(offset int64) ([]*BlockLog, error) {
+func (b *TelosScanBiz) requestContractEvents(offset int64, limit int64) ([]*BlockLog, error) {
 
 	jsonData := JSONData{}
 	req := b.apiClient.R().SetPathParam("address", contractAddrStr).SetQueryParams(map[string]string{
 		"offset": strconv.FormatInt(offset, 10),
-		"limit":  "50",
+		"limit":  strconv.FormatInt(limit, 10),
 		"sort":   "ASC",
 	}).SetHeader("Accept", "application/json").SetResult(&jsonData)
 	resp, err := req.Get(apiUrl + "/v1/contract/{address}/logs")
@@ -193,7 +210,7 @@ func (b *TelosScanBiz) processLog(bl *BlockLog) {
 	log.Infof("eventSigStr: %v, whether got processor: %v", eventSigStr, ok)
 	if processor != nil {
 		if err := processor(bl, b.contractAbi); err != nil {
-			log.Errorf("processor %v return err: %v", eventSigStr, err)
+			log.Errorf("processor %v return err: %v, block log: %v", eventSigStr, err, bl)
 		}
 	}
 }

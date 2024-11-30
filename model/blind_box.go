@@ -45,3 +45,18 @@ var OrderTabColumns = struct {
 	CreateTime:      "create_time",
 	UpdateTime:      "update_time",
 }
+
+// PullOffsetTab [...]
+type PullOffsetTab struct {
+	ID     int   `gorm:"primaryKey;column:id;type:int;not null;default:1" json:"id"`
+	Offset int64 `gorm:"column:offset;type:bigint;not null;default:0" json:"offset"`
+}
+
+// PullOffsetTabColumns get sql column name.获取数据库列名
+var PullOffsetTabColumns = struct {
+	ID     string
+	Offset string
+}{
+	ID:     "id",
+	Offset: "offset",
+}

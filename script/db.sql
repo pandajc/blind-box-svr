@@ -18,3 +18,11 @@ CREATE TABLE `order_tab` (
   KEY `idx_nft_addr_token_id` (`nft_addr`,`token_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
+CREATE TABLE `pull_offset_tab` (
+  `id` int NOT NULL DEFAULT '1',
+  `offset` bigint NOT NULL DEFAULT '0',
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+INSERT INTO `pull_offset_tab` VALUES ('1', '0');
+
