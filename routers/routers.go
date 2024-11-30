@@ -8,4 +8,8 @@ func InitGinGroups(r *gin.Engine) {
 	st.POST("/create", createStudent)
 	user := r.Group("/user")
 	user.POST("/login", login)
+
+	blindBox := r.Group("/blindBox")
+	blindBox.GET("/orderList", getOrderList)
+
 }

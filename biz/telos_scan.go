@@ -24,6 +24,7 @@ import (
 	"blind-box-svr/dto/params"
 	"blind-box-svr/global"
 	"blind-box-svr/model"
+	"fmt"
 	"math/big"
 	"strconv"
 	"strings"
@@ -67,9 +68,9 @@ type TelosScanBiz struct {
 
 var logListSig string = calculateTopicHash("List(address,address,uint256,uint256,uint256,uint256)")
 var logPurchaseSig string = calculateTopicHash("Purchase(address,address,uint256,uint256,uint256)")
-var logRevokeSig string = calculateTopicHash("List(address,address,uint256)")
-var logUpdatePriceSig string = calculateTopicHash("List(address,address,uint256,uint256)")
-var logUpdateAmountSig string = calculateTopicHash("List(address,address,uint256,uint256)")
+var logRevokeSig string = calculateTopicHash("Revoke(address,address,uint256)")
+var logUpdatePriceSig string = calculateTopicHash("UpdatePrice(address,address,uint256,uint256)")
+var logUpdateAmountSig string = calculateTopicHash("UpdateAmount(address,address,uint256,uint256)")
 
 const contractAddrStr string = "0xD60d331B1999824C84A0A702D07368Fde493dF94"
 const rpcUrl string = "https://rpc.testnet.telos.net"
@@ -77,6 +78,10 @@ const apiUrl string = "https://api.testnet.teloscan.io"
 const fetchApiIntervalSec int64 = 10
 
 var telosScanBiz *TelosScanBiz
+
+func GetTelosScanBiz() *TelosScanBiz {
+	return telosScanBiz
+}
 
 // var rpcClient          *ethclient.Client
 var nftMarket *nftmarket.Nftmarket
@@ -150,7 +155,7 @@ func (b *TelosScanBiz) requestContractEvents(offset int64) ([]*BlockLog, error) 
 	jsonData := JSONData{}
 	req := b.apiClient.R().SetPathParam("address", contractAddrStr).SetQueryParams(map[string]string{
 		"offset": strconv.FormatInt(offset, 10),
-		"limit":  "10",
+		"limit":  "50",
 		"sort":   "ASC",
 	}).SetHeader("Accept", "application/json").SetResult(&jsonData)
 	resp, err := req.Get(apiUrl + "/v1/contract/{address}/logs")
@@ -158,7 +163,7 @@ func (b *TelosScanBiz) requestContractEvents(offset int64) ([]*BlockLog, error) 
 		log.Errorf("request err: %v", err)
 		return nil, err
 	}
-	log.Infof("request req: %v resp: %v", req, resp)
+	// log.Infof("request req: %v resp: %v", req, resp)
 	if resp.IsSuccess() {
 		if jsonData.Success {
 			return jsonData.Results, nil
@@ -167,7 +172,7 @@ func (b *TelosScanBiz) requestContractEvents(offset int64) ([]*BlockLog, error) 
 			return nil, err
 		}
 	} else {
-		log.Errorf("request error, resp: %v", resp)
+		log.Errorf("request error, resp: %v, req: %v", resp, req)
 		return nil, err
 	}
 }
@@ -184,7 +189,8 @@ func (b *TelosScanBiz) processLog(bl *BlockLog) {
 		return
 	}
 	eventSigStr := topics[0].Hex()
-	processor := b.eventDataProcessor[eventSigStr]
+	processor, ok := b.eventDataProcessor[eventSigStr]
+	log.Infof("eventSigStr: %v, whether got processor: %v", eventSigStr, ok)
 	if processor != nil {
 		if err := processor(bl, b.contractAbi); err != nil {
 			log.Errorf("processor %v return err: %v", eventSigStr, err)
@@ -192,7 +198,7 @@ func (b *TelosScanBiz) processLog(bl *BlockLog) {
 	}
 }
 
-func (b *TelosScanBiz) getOrderList(param *params.OrderParam) ([]*model.OrderTab, error) {
+func (b *TelosScanBiz) GetOrderList(param *params.OrderParam) ([]*model.OrderTab, error) {
 	otm := model.OrderTabMgr(global.GetDB())
 	gdb := otm.Where("nft_addr = ?", param.NftAddr)
 	if len(param.Seller) > 0 {
@@ -205,9 +211,10 @@ func (b *TelosScanBiz) getOrderList(param *params.OrderParam) ([]*model.OrderTab
 			gdb.Where("token_id > ?", param.MaxCardTokenId)
 		}
 	}
+	gdb.Where("amount > 0").Where(fmt.Sprintf("state = %v", constants.ACTIVE))
 	limit := param.Limit
-	if limit == 0 || limit > 20 {
-		limit = 20
+	if limit == 0 || limit > 50 {
+		limit = 50
 	}
 	var orders []*model.OrderTab
 	err := gdb.Limit(int(limit)).Offset(int(param.Offset)).Order("order_id desc").Find(&orders).Error
@@ -277,11 +284,12 @@ var processEventPurchaseFunc = func(bl *BlockLog, contractAbi abi.ABI) error {
 		return err
 	}
 	cols := model.OrderTabColumns
-	err = otm.Select(cols.Amount, cols.UpdateTimestamp, cols.UpdateTime).Updates(model.OrderTab{
-		Amount:          nftMarketOrder.Amount.Int64(),
-		UpdateTimestamp: int64(bl.Timestamp),
-		UpdateTime:      time.Now(),
-	}).Where("order_id = ?", nftMarketPurchase.OrderId).Error
+	err = otm.Select(cols.Amount, cols.UpdateTimestamp, cols.UpdateTime).Where("order_id = ?", nftMarketPurchase.OrderId.Int64()).
+		Updates(model.OrderTab{
+			Amount:          nftMarketOrder.Amount.Int64(),
+			UpdateTimestamp: int64(bl.Timestamp),
+			UpdateTime:      time.Now(),
+		}).Error
 	if err != nil {
 		return err
 	}
@@ -297,11 +305,12 @@ var processEventRevokeFunc = func(bl *BlockLog, contractAbi abi.ABI) error {
 	nftMarketRevoke.OrderId = new(big.Int).SetBytes(topics[3].Bytes())
 	log.Infof("nftMarketRevoke: %v", nftMarketRevoke)
 	cols := model.OrderTabColumns
-	err := model.UserTabMgr(global.GetDB()).Select(cols.State, cols.UpdateTimestamp, cols.UpdateTime).Updates(model.OrderTab{
+	err := model.OrderTabMgr(global.GetDB()).Where("order_id = ?", nftMarketRevoke.OrderId.Int64()).
+		Select(cols.State, cols.UpdateTimestamp, cols.UpdateTime).Updates(model.OrderTab{
 		State:           constants.INACTIVE,
 		UpdateTimestamp: int64(bl.Timestamp),
 		UpdateTime:      time.Now(),
-	}).Where("order_id = ?", nftMarketRevoke.OrderId).Error
+	}).Error
 	if err != nil {
 		return err
 	}
@@ -322,11 +331,12 @@ var processEventUpdatePriceFunc = func(bl *BlockLog, contractAbi abi.ABI) error 
 	}
 	log.Infof("nftMarketUpdatePrice: %v", nftMarketUpdatePrice)
 	cols := model.OrderTabColumns
-	err = model.UserTabMgr(global.GetDB()).Select(cols.Price, cols.UpdateTimestamp, cols.UpdateTime).Updates(model.OrderTab{
+	err = model.OrderTabMgr(global.GetDB()).Where("order_id = ?", nftMarketUpdatePrice.OrderId.Int64()).
+		Select(cols.Price, cols.UpdateTimestamp, cols.UpdateTime).Updates(model.OrderTab{
 		Price:           float64(nftMarketUpdatePrice.NewPrice.Int64()),
 		UpdateTimestamp: int64(bl.Timestamp),
 		UpdateTime:      time.Now(),
-	}).Where("order_id = ?", nftMarketUpdatePrice.OrderId).Error
+	}).Error
 	if err != nil {
 		return err
 	}
@@ -347,11 +357,12 @@ var processEventUpdateAmountFunc = func(bl *BlockLog, contractAbi abi.ABI) error
 	}
 	log.Infof("nftMarketUpdateAmount: %v", nftMarketUpdateAmount)
 	cols := model.OrderTabColumns
-	err = model.UserTabMgr(global.GetDB()).Select(cols.Price, cols.UpdateTimestamp, cols.UpdateTime).Updates(model.OrderTab{
+	err = model.OrderTabMgr(global.GetDB()).Where("order_id = ?", nftMarketUpdateAmount.OrderId.Int64()).
+		Select(cols.Price, cols.UpdateTimestamp, cols.UpdateTime).Updates(model.OrderTab{
 		Amount:          nftMarketUpdateAmount.NewAmount.Int64(),
 		UpdateTimestamp: int64(bl.Timestamp),
 		UpdateTime:      time.Now(),
-	}).Where("order_id = ?", nftMarketUpdateAmount.OrderId).Error
+	}).Error
 	if err != nil {
 		return err
 	}
